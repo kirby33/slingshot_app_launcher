@@ -42,10 +42,16 @@ const PopupMenu = imports.ui.popupMenu;
 const SlingShot_App_Launcher = imports.misc.extensionUtils.getCurrentExtension();
 const Lib = SlingShot_App_Launcher.imports.lib;
 
+
+const LayoutManager = Main.layoutManager;
+let monitor = LayoutManager.monitors[LayoutManager.primaryIndex];
+
+
 const SCHEMA = "org.gnome.shell.extensions.slingshot_app_launcher";
 
 const ICON_SIZE = 64;
-const ICONS_PER_PAGE = 12;
+const ICONS_PER_ROW  = Math.floor((monitor.width - 302) / 146) ;
+const ICONS_PER_PAGE = Math.floor( ((monitor.height - 186) / 178.8) )*ICONS_PER_ROW ;
 
 let settings;
 
@@ -90,7 +96,7 @@ const ApplicationsButton = new Lang.Class({
         this._box.add_actor(icon);
         icon.icon_name='start-here';
 
-        let etiqueta = new St.Label({ text: _("Applications")});
+        let etiqueta = new St.Label({ text: _("")});
         this._box.add_actor(etiqueta);
 
         this._appSys = Shell.AppSystem.get_default();
@@ -144,16 +150,15 @@ const ApplicationsButton = new Lang.Class({
         var minimumCounter=this.currentPageVisibleInMenu*ICONS_PER_PAGE;
         var maximumCounter=(this.currentPageVisibleInMenu+1)*ICONS_PER_PAGE;
 
-							var shown_icons=0;
+        var shown_icons=0;
         for (var item in app_list) {
             counter+=1;
             if ((counter>minimumCounter)&&(counter<=maximumCounter)) {
-            	    shown_icons+=1;
+                shown_icons+=1;
                 let app=app_list[item];
                 let icon = app.create_icon_texture(ICON_SIZE);
                 let texto = new St.Label({text:app.get_name(), style_class: 'slingshot_table'});
-
-														let container2=new St.BoxLayout({vertical: true, style_class:'slingshot_table_element'})                
+                let container2=new St.BoxLayout({vertical: true, style_class:'slingshot_table_element'})
                 let container3=new St.BoxLayout({vertical: true, reactive: true, style_class:'popup-menu-item'});
                 
                 texto.clutter_text.line_wrap_mode = Pango.WrapMode.WORD;
@@ -172,7 +177,7 @@ const ApplicationsButton = new Lang.Class({
                 container2.add(container3, {x_align: St.Align.MIDDLE, y_align: St.Align.MIDDLE});
                 container.add(container2, { row: this.posy, col: this.posx, x_fill: false, y_fill: false, x_align: St.Align.MIDDLE, y_align: St.Align.START});
                 this.posx+=1;
-                if (this.posx==4) {
+                if (this.posx==ICONS_PER_ROW) {
                     this.posx=0;
                     this.posy+=1;
                 }
@@ -183,7 +188,7 @@ const ApplicationsButton = new Lang.Class({
             let container2=new St.BoxLayout({vertical: true})
             container.add(container2, { row: this.posy, col: this.posx, x_fill: false, y_fill: false, x_align: St.Align.MIDDLE, y_align: St.Align.START});
             this.posx+=1;
-            if (this.posx==4) {
+            if (this.posx==ICONS_PER_ROW) {
                 this.posx=0;
                 this.posy+=1;
             }
@@ -276,8 +281,8 @@ const ApplicationsButton = new Lang.Class({
 
         if(this._activitiesNoVisible) {
         
-        	// one empty element to separate ACTIVITIES from the list
-			let item = new St.Label({text: ' ', style_class:'popup-menu-item', reactive: false});
+            // one empty element to separate ACTIVITIES from the list
+            let item = new St.Label({text: ' ', style_class:'popup-menu-item', reactive: false});
             this.classContainer.add(item);
             
             item = new St.Label({text: _("Activities"), style_class:'popup-menu-item', reactive: true});
@@ -297,6 +302,11 @@ const ApplicationsButton = new Lang.Class({
         } else {
             this._currentWidth_icons=this.iconsContainer.width;
         }
+
+        if (this.iconsContainer.height<149*(1+Math.floor(ICONS_PER_PAGE/ICONS_PER_ROW))) {
+            this.iconsContainer.height=149*(1+Math.floor(ICONS_PER_PAGE/ICONS_PER_ROW));
+        }
+
         if (this._currentHeight_icons>this.iconsContainer.height) {
             this.iconsContainer.height=this._currentHeight_icons;
         } else {
@@ -313,6 +323,7 @@ const ApplicationsButton = new Lang.Class({
         } else {
             this._currentHeight=this.mainContainer.height;
         }
+
     },
 
     _onActivitiesClick: function(actor,event) {
@@ -451,4 +462,3 @@ function disable() {
 function init() {
     settings = Lib.getSettings(SCHEMA);
 }
-

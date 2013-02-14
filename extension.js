@@ -24,6 +24,13 @@
     7: Better use of standard CSS
        Tries to keep the size of the meny as steady as possible, by
        tracking the maximum size used
+    8: Reduces the icon matrix when the screen is small (based on code
+       from kirby33)
+       Now doesn't show empty pages
+       Allows to customize the style of the main button (with/out icon
+       or text)
+    9: Allows to choose between categories mode or pure icon mode
+       Now highlights all the possible buttons
     
 */
 
@@ -31,6 +38,8 @@ const ShellVersion = imports.misc.config.PACKAGE_VERSION.split(".");
 const Clutter = imports.gi.Clutter;
 const GMenu = imports.gi.GMenu;
 const Lang = imports.lang;
+const Mainloop = imports.mainloop;
+const Meta = imports.gi.Meta;
 const Pango = imports.gi.Pango;
 const Shell = imports.gi.Shell;
 const St = imports.gi.St;
@@ -42,18 +51,18 @@ const PopupMenu = imports.ui.popupMenu;
 const SlingShot_App_Launcher = imports.misc.extensionUtils.getCurrentExtension();
 const Lib = SlingShot_App_Launcher.imports.lib;
 
-
 const LayoutManager = Main.layoutManager;
-let monitor = LayoutManager.monitors[LayoutManager.primaryIndex];
 
-
-const SCHEMA = "org.gnome.shell.extensions.slingshot_app_launcher";
+const SCHEMA = 'org.gnome.shell.extensions.slingshot_app_launcher';
 
 const ICON_SIZE = 64;
-const ICONS_PER_ROW  = Math.floor((monitor.width - 302) / 146) ;
-const ICONS_PER_PAGE = Math.floor( ((monitor.height - 186) / 178.8) )*ICONS_PER_ROW ;
 
-let settings;
+
+const  ICONSPERROW_DEF    = 3 ;
+const  ICONSPERCOLUMN_DEF = 4 ;
+
+let  ICONSPERROW    = ICONSPERROW_DEF ;
+let  ICONSPERCOLUMN = ICONSPERCOLUMN_DEF ;
 
 const SlingShotItem = new Lang.Class({
     Name: 'SlingShot.SlingShotItem',
@@ -84,33 +93,50 @@ const ApplicationsButton = new Lang.Class({
         this._activitiesNoVisible=false;
         this._currentWidth=1.0;
         this._currentHeight=1.0;
-        this._currentWidth_icons=1.0;
-        this._currentHeight_icons=1.0;
+        this._currentIconsWidth=1.0;
+        this._currentIconsHeight=1.0;
+
+        this._settings = Lib.getSettings(SCHEMA);
+
+        this._monitor = LayoutManager.monitors[LayoutManager.primaryIndex];
+
+
+        if (true==Lib.getSettings(SCHEMA).get_boolean('maximize-menu')) {
+            ICONSPERROW    = (Math.floor( (LayoutManager.monitors[LayoutManager.primaryIndex].width  - 314) / 146  )  ) ;
+            ICONSPERCOLUMN = (Math.floor( (LayoutManager.monitors[LayoutManager.primaryIndex].height - 330) / 125  )  ) ;
+        }
+        else {
+            ICONSPERROW    = ICONSPERROW_DEF ;
+            ICONSPERCOLUMN = ICONSPERCOLUMN_DEF ;
+        }
+
+
+        this._iconsPerRow = ICONSPERROW;
+        this._iconsPerColumn = ICONSPERCOLUMN;
 
         this.parent(0.0,'SlingShot');
         this.actor.add_style_class_name('panel-status-button');
         this._box = new St.BoxLayout({ style_class: 'panel-status-button-box' });
         this.actor.add_actor(this._box);
-        
-        let icon = new St.Icon({ gicon: null, style_class: 'system-status-icon' });
-        this._box.add_actor(icon);
-        icon.icon_name='start-here';
 
-        let etiqueta = new St.Label({ text: _("")});
-        this._box.add_actor(etiqueta);
+        this.buttonIcon = new St.Icon({ gicon: null, style_class: 'system-status-icon' });
+        this._box.add_actor(this.buttonIcon);
+        this.buttonIcon.icon_name='start-here';
+        this.buttonLabel = new St.Label({ text: _("Applications")});
+        this._box.add_actor(this.buttonLabel);
+
+        this._onChangedSetting();
+        this._settingBind=this._settings.connect('changed',Lang.bind(this,this._onChangedSetting));
 
         this._appSys = Shell.AppSystem.get_default();
         this._installedChangedId = this._appSys.connect('installed-changed', Lang.bind(this, this._refresh));
-
-        this._onSetActivitiesStatus();
-        this._onSetActivitiesHotspot();
-        this._settingBind=settings.connect("changed",Lang.bind(this,this._onChangedSetting));
+        this._fillCategories();
 
         this._display();
     },
 
     destroy: function() {
-        settings.disconnect(this._settingBind);
+        this._settings.disconnect(this._settingBind);
         this._setActivitiesNoVisible(false);
         this._setActivitiesNoHotspot(false);
         this._appSys.disconnect(this._installedChangedId);
@@ -118,6 +144,7 @@ const ApplicationsButton = new Lang.Class({
     },
 
     _refresh: function() {
+        this._fillCategories();
         this._display();
     },
 
@@ -135,118 +162,11 @@ const ApplicationsButton = new Lang.Class({
 
     },
 
-    _loadCategory: function(container,dir, menu) {
-
-        this.posx=0;
-        this.posy=0;
-        this.icon_counter=0;
-        
-        let app_list=[];
-        this._loadCategory2(container,dir,menu,app_list);
-
-        app_list.sort(this._sortApps);
-
-        var counter=0;
-        var minimumCounter=this.currentPageVisibleInMenu*ICONS_PER_PAGE;
-        var maximumCounter=(this.currentPageVisibleInMenu+1)*ICONS_PER_PAGE;
-
-        var shown_icons=0;
-        for (var item in app_list) {
-            counter+=1;
-            if ((counter>minimumCounter)&&(counter<=maximumCounter)) {
-                shown_icons+=1;
-                let app=app_list[item];
-                let icon = app.create_icon_texture(ICON_SIZE);
-                let texto = new St.Label({text:app.get_name(), style_class: 'slingshot_table'});
-                let container2=new St.BoxLayout({vertical: true, style_class:'slingshot_table_element'})
-                let container3=new St.BoxLayout({vertical: true, reactive: true, style_class:'popup-menu-item'});
-                
-                texto.clutter_text.line_wrap_mode = Pango.WrapMode.WORD;
-                texto.clutter_text.line_wrap = true;
-                //texto.clutter_text.line_ellipsize_mode = Pango.EllipsizeMode.END;
-
-                container3.add(icon, {x_fill: false, y_fill: false,x_align: St.Align.MIDDLE, y_align: St.Align.MIDDLE});
-                container3.add(texto, {x_fill: false, y_fill: true,x_align: St.Align.MIDDLE, y_align: St.Align.MIDDLE});
-                container3._app=app;
-                container3._customEventId=container3.connect('button-release-event',Lang.bind(this,this._onAppClick));
-                container3._customEnterId=container3.connect('enter-event',Lang.bind(this,this._onAppEnter));
-                container3._customLeaveId=container3.connect('leave-event',Lang.bind(this,this._onAppLeave));
-                container3._customDestroyId=container3.connect('destroy',Lang.bind(this,this._onAppDestroy));
-                container3._customPseudoClass='active';
-
-                container2.add(container3, {x_align: St.Align.MIDDLE, y_align: St.Align.MIDDLE});
-                container.add(container2, { row: this.posy, col: this.posx, x_fill: false, y_fill: false, x_align: St.Align.MIDDLE, y_align: St.Align.START});
-                this.posx+=1;
-                if (this.posx==ICONS_PER_ROW) {
-                    this.posx=0;
-                    this.posy+=1;
-                }
-            }
-        }
-        
-        for (var counter2=shown_icons;counter2<ICONS_PER_PAGE;counter2+=1) {
-            let container2=new St.BoxLayout({vertical: true})
-            container.add(container2, { row: this.posy, col: this.posx, x_fill: false, y_fill: false, x_align: St.Align.MIDDLE, y_align: St.Align.START});
-            this.posx+=1;
-            if (this.posx==ICONS_PER_ROW) {
-                this.posx=0;
-                this.posy+=1;
-            }
-        }
-
-        if (this.icon_counter>ICONS_PER_PAGE) {
-            this.pagesVisibleInMenu=0;
-            var pages=new St.BoxLayout({vertical: false});
-            for (var i=0;i<=(this.icon_counter/ICONS_PER_PAGE);i++) {
-                let clase='';
-                if (i==this.currentPageVisibleInMenu) {
-                    clase='active';
-                }
-                let texto=(i+1).toString();
-                let page_label = new St.Label({text: texto,style_class:'popup-menu-item',pseudo_class:clase, reactive: true});
-
-                page_label._page_assigned=i;
-                page_label._customEventId=page_label.connect('button-release-event',Lang.bind(this,this._onPageClick));
-                page_label._customDestroyId=page_label.connect('destroy',Lang.bind(this,this._onDestroyActor));
-                pages.add(page_label, {y_align:St.Align.END});
-                this.pagesVisibleInMenu+=1;
-            }
-            this.mainContainer.add(pages, {row: 1, col: 1, x_fill: false, y_fill: false, y_expand: false, x_align: St.Align.MIDDLE, y_align: St.Align.END});
-        } else {
-            this.pagesVisibleInMenu=1;
-        }
-    },
-
-    // Recursively load a GMenuTreeDirectory
-    // (taken from js/ui/appDisplay.js in core shell)
-
-    _loadCategory2: function(container,dir, menu,app_list) {
-        var iter = dir.iter();
-        var nextType;
-
-        while ((nextType = iter.next()) != GMenu.TreeItemType.INVALID) {
-            if (nextType == GMenu.TreeItemType.ENTRY) {
-                let entry = iter.get_entry();
-                if (!entry.get_app_info().get_nodisplay()) {
-                    let app = this._appSys.lookup_app_by_tree_entry(entry);
-                    app_list[this.icon_counter]=app;
-                    this.icon_counter+=1;
-                }
-            } else if (nextType == GMenu.TreeItemType.DIRECTORY) {
-                this._loadCategory2(container,iter.get_directory(), menu,app_list);
-            }
-        }
-    },
-
-    _display : function() {
-        this.mainContainer = new St.Table({homogeneous: false});
-        this.classContainer = new St.BoxLayout({vertical: true, style_class: 'slingshot_class_list'});
-        this.globalContainer = new St.Table({ homogeneous: false, reactive: true});
-        this.iconsContainer = new St.Table({ homogeneous: true});
-        this.mainContainer.add(this.classContainer, {row: 0, col:0, x_fill:false, y_fill: false, x_align: St.Align.START, y_align: St.Align.START});
-        this.globalContainer.add(this.iconsContainer, {row: 0, col:0, x_fill:false, y_fill: false, x_align: St.Align.START, y_align: St.Align.START});
-        this.mainContainer.add(this.globalContainer, {row: 0, col:1, x_fill:false, y_fill: false, x_align: St.Align.START, y_align: St.Align.START});
-
+    _fillCategories: function() {
+    
+        this._appList=[];
+        this._appClass=[];
+    
         let tree = this._appSys.get_tree();
         let root = tree.get_root_directory();
 
@@ -255,6 +175,213 @@ const ApplicationsButton = new Lang.Class({
         while ((nextType = iter.next()) != GMenu.TreeItemType.INVALID) {
             if (nextType == GMenu.TreeItemType.DIRECTORY) {
                 let dir = iter.get_directory();
+                let childrens=[];
+                this._fillCategories2(dir,childrens);
+                if (childrens.length==0) {
+                    continue;
+                }
+                childrens.sort(this._sortApps);
+                let item = { dirItem: dir, dirChilds: childrens };
+                this._appClass.push(item);
+            }
+        }
+        this._appList.sort(this._sortApps);
+    },
+    
+    _fillCategories2: function(dir,childrens) {
+
+        var iter = dir.iter();
+        var nextType;
+
+        while ((nextType = iter.next()) != GMenu.TreeItemType.INVALID) {
+            if (nextType == GMenu.TreeItemType.ENTRY) {
+                let entry = iter.get_entry();
+                if (!entry.get_app_info().get_nodisplay()) {
+                    let app = this._appSys.lookup_app_by_tree_entry(entry);
+                    childrens.push(app);
+                    this._appList.push(app);
+                }
+            } else if (nextType == GMenu.TreeItemType.DIRECTORY) {
+                this._fillCategories2(iter.get_directory(), childrens);
+            }
+        }
+    },
+
+    _paintIcons: function(container,appList,width) {
+
+        this.posx=0;
+        this.posy=0;
+        this.iconCounter=0;
+
+        var iconsPerPage=width*this._iconsPerColumn;
+        var minimumCounter=this.currentPageVisibleInMenu*iconsPerPage;
+        var maximumCounter=(this.currentPageVisibleInMenu+1)*iconsPerPage;
+
+        var shownIcons=0;
+        for (var item in appList) {
+            this.iconCounter++;
+            if ((this.iconCounter>minimumCounter)&&(this.iconCounter<=maximumCounter)) {
+                shownIcons++;
+                let app=appList[item];
+                let icon = app.create_icon_texture(ICON_SIZE);
+                let texto = new St.Label({text:app.get_name(), style_class: 'slingshot_table'});
+
+                let container2=new St.BoxLayout({vertical: true, reactive: true, style_class:'popup-menu-item'});
+
+                texto.clutter_text.line_wrap_mode = Pango.WrapMode.WORD;
+                texto.clutter_text.line_wrap = true;
+                //texto.clutter_text.line_ellipsize_mode = Pango.EllipsizeMode.END;
+
+                container2.add(icon, {x_fill: false, y_fill: false,x_align: St.Align.MIDDLE, y_align: St.Align.START});
+                container2.add(texto, {x_fill: true, y_fill: true,x_align: St.Align.MIDDLE, y_align: St.Align.START});
+                container2._app=app;
+                container2._customEventId=container2.connect('button-release-event',Lang.bind(this,this._onAppClick));
+                container2._customEnterId=container2.connect('enter-event',Lang.bind(this,this._onAppEnter));
+                container2._customLeaveId=container2.connect('leave-event',Lang.bind(this,this._onAppLeave));
+                container2._customDestroyId=container2.connect('destroy',Lang.bind(this,this._onAppDestroy));
+                container2._customPseudoClassActive='active';
+                container2._customPseudoClassInactive='';
+
+                container.add(container2, { row: this.posy, col: this.posx, x_fill: false, y_fill: false, x_align: St.Align.MIDDLE, y_align: St.Align.START});
+
+                this.posx++;
+                if (this.posx==width) {
+                    this.posx=0;
+                    this.posy++;
+                }
+            }
+        }
+
+        for (var counter2=shownIcons;counter2<iconsPerPage;counter2+=1) {
+            let texto = new St.Label({text:" "});
+            texto.width=ICON_SIZE;
+            texto.height=ICON_SIZE;
+            let texto2 = new St.Label({text:" \n \n ", style_class: 'slingshot_table' });
+            let container2=new St.BoxLayout({vertical: true, style_class:'popup-menu-item'})
+            container2.add(texto, {x_fill: false, y_fill: false,x_align: St.Align.MIDDLE, y_align: St.Align.START});
+            container2.add(texto2, {x_fill: true, y_fill: true,x_align: St.Align.MIDDLE, y_align: St.Align.START});
+            container.add(container2, { row: this.posy, col: this.posx, x_fill: false, y_fill: false, x_align: St.Align.MIDDLE, y_align: St.Align.START});
+            this.posx++;
+            if (this.posx==width) {
+                this.posx=0;
+                this.posy++;
+            }
+        }
+    },
+
+    _repaintMenu : function() {
+
+        Mainloop.source_remove(this._updateRegionIdle);
+        delete this._updateRegionIdle;
+        this._currentWidth=1.0;
+        this._currentHeight=1.0;
+        this._currentIconsWidth=1.0;
+        this._currentIconsHeight=1.0;
+        this._display();
+        return (false);
+    },
+
+
+    _menuSizeChanged : function(actor,event) {
+
+        actor._customRealized=true;
+        if ((this.iconsContainer._customRealized==false) || (this.classContainer._customRealized==false) || (this.searchContainer._customRealized==false)) {
+            return;
+        }
+
+        if (actor!=this.iconsContainer) {
+            return;
+        }
+
+        let doRefresh=false;
+        if (((this.iconsContainer.width+this.classContainer.width)>((this._monitor.width*99)/100))&&(this._iconsPerRow>1)) {
+            this._iconsPerRow-=1;
+            doRefresh=true;
+        }
+        if (((this.iconsContainer.height)>((this._monitor.height*99)/100))&&(this._iconsPerColumn>1)) {
+            this._iconsPerColumn-=1;
+            doRefresh=true;
+        }
+        if (doRefresh) {
+            this._updateRegionIdle = Mainloop.idle_add(Lang.bind(this, this._repaintMenu),0);
+        }
+    },
+
+
+    _display : function() {
+    
+        let paintCategories = this._settings.get_boolean('show-categories');
+        this.mainContainer = new St.Table({homogeneous: false});
+        this.baseContainer = new St.Table({homogeneous: false});
+        this.searchContainer = new St.BoxLayout({vertical: false});
+
+        this.globalContainer = new St.Table({ homogeneous: false, reactive: true});
+        this.iconsContainer = new St.Table({ homogeneous: true});
+        this.globalContainer.add(this.iconsContainer, {row: 0, col:0, x_fill:false, y_fill: false, x_align: St.Align.START, y_align: St.Align.START});
+        
+        let iconCol;
+        if(paintCategories) {
+            iconCol=1;
+        } else {
+            iconCol=0;
+        }
+
+        let icon1 = new St.Icon({icon_name: 'categories-symbolic',icon_size: 24});
+        let iconBin1=new St.BoxLayout({reactive: true, style_class:'popup-menu-item'});
+        iconBin1.add(icon1, {x_fill:true, y_fill: false,x_align: St.Align.START, y_align: St.Align.START});
+        let icon2 = new St.Icon({icon_name: 'icons-symbolic',icon_size: 24});
+        let iconBin2=new St.BoxLayout({reactive: true, style_class:'popup-menu-item'});
+        iconBin2.add(icon2, {x_fill:true, y_fill: false,x_align: St.Align.START, y_align: St.Align.START});
+        this.searchContainer.add(iconBin1, {x_fill:true, y_fill: false,x_align: St.Align.START, y_align: St.Align.START});
+        this.searchContainer.add(iconBin2, {x_fill:true, y_fill: false,x_align: St.Align.START, y_align: St.Align.START});
+
+        iconBin1._customEventId=iconBin1.connect('button-release-event',Lang.bind(this,this._onCategoriesClick));
+        iconBin1._customEnterId=iconBin1.connect('enter-event',Lang.bind(this,this._onAppEnter));
+        iconBin1._customLeaveId=iconBin1.connect('leave-event',Lang.bind(this,this._onAppLeave));
+        iconBin1._customDestroyId=iconBin1.connect('destroy',Lang.bind(this,this._onAppDestroy));
+        iconBin1._customPseudoClassActive='active';
+        iconBin1._customPseudoClassInactive='';
+
+        iconBin2._customEventId=iconBin2.connect('button-release-event',Lang.bind(this,this._onIconsClick));
+        iconBin2._customEnterId=iconBin2.connect('enter-event',Lang.bind(this,this._onAppEnter));
+        iconBin2._customLeaveId=iconBin2.connect('leave-event',Lang.bind(this,this._onAppLeave));
+        iconBin2._customDestroyId=iconBin2.connect('destroy',Lang.bind(this,this._onAppDestroy));
+        iconBin2._customPseudoClassActive='active';
+        iconBin2._customPseudoClassInactive='';
+
+
+        this.mainContainer.add(this.searchContainer,{row: 0, col:0, col_span: iconCol+1, x_fill: true, y_fill: false, x_align: St.Align.START, y_align: St.Align.START});
+        
+        if (paintCategories) {
+            this.classContainer = new St.BoxLayout({vertical: true, style_class: 'slingshot_class_list'});
+            this.mainContainer.add(this.classContainer, {row: 1, col:0, x_fill:false, y_fill: false, x_align: St.Align.START, y_align: St.Align.START});
+            this.classContainer._customRealized=false;
+            this.classContainer._customEventId=this.classContainer.connect_after('realize',Lang.bind(this,this._menuSizeChanged));
+            this.classContainer._customDestroyId=this.classContainer.connect('destroy',Lang.bind(this,this._onDestroyActor));
+        } else {
+            this.classContainer = {_customRealized:true, width:0, height:0};
+        }
+
+
+        
+        this.mainContainer.add(this.globalContainer, {row: 1, col:iconCol, x_fill:true, y_fill: true, x_align: St.Align.START, y_align: St.Align.START});
+        
+        
+        this.mainContainer.add(this.baseContainer,{row: 2, col:0, col_span: iconCol+1, x_fill: true, y_fill: false, x_align: St.Align.START, y_align: St.Align.END});
+
+        this.iconsContainer._customRealized=false;
+        this.iconsContainer._customEventId=this.iconsContainer.connect_after('realize',Lang.bind(this,this._menuSizeChanged));
+        this.iconsContainer._customDestroyId=this.iconsContainer.connect('destroy',Lang.bind(this,this._onDestroyActor));
+
+        this.searchContainer._customRealized=false;
+        this.searchContainer._customEventId=this.searchContainer.connect_after('realize',Lang.bind(this,this._menuSizeChanged));
+        this.searchContainer._customDestroyId=this.searchContainer.connect('destroy',Lang.bind(this,this._onDestroyActor));
+
+        var iconsPerPage=this._iconsPerRow*this._iconsPerColumn;
+        if (paintCategories) {
+            for (let i=0; i<this._appClass.length; i++) {
+                let dItem= this._appClass[i];
+                let dir = dItem.dirItem;
                 let categoryName=dir.get_name();
                 if (this.currentSelection=='') {
                     this.currentSelection=categoryName;
@@ -264,14 +391,53 @@ const ApplicationsButton = new Lang.Class({
                 let item = new St.Label({text: categoryName, style_class:'popup-menu-item', reactive: true});
                 item._group_name=categoryName;
                 item._customEventId=item.connect('button-release-event',Lang.bind(this,this._onCategoryClick));
-                item._customDestroyId=item.connect('destroy',Lang.bind(this,this._onDestroyActor));
+                item._customEnterId=item.connect('enter-event',Lang.bind(this,this._onAppEnter));
+                item._customLeaveId=item.connect('leave-event',Lang.bind(this,this._onAppLeave));
+                item._customDestroyId=item.connect('destroy',Lang.bind(this,this._onAppDestroy));
+                item._customPseudoClassActive='active';
+                item._customPseudoClassInactive='';
                 this.classContainer.add(item);
 
                 if (categoryName==this.currentSelection) {
                     item.set_style_pseudo_class('active');
-                    this._loadCategory(this.iconsContainer,dir,item.menu);
+                    item._customPseudoClassInactive='active';
+                    this._paintIcons(this.iconsContainer,dItem.dirChilds,this._iconsPerRow);
                 }
             }
+        } else {
+            this._paintIcons(this.iconsContainer,this._appList,this._iconsPerRow+1);
+            iconsPerPage+=this._iconsPerColumn;
+        }
+        
+        let pages=new St.BoxLayout({vertical: false});
+        if (this.iconCounter>iconsPerPage) {
+            this.pagesVisibleInMenu=0;
+            for (var i=0;i<=((this.iconCounter-1)/iconsPerPage);i++) {
+                let clase='';
+                if (i==this.currentPageVisibleInMenu) {
+                    clase='active';
+                }
+                let texto=(i+1).toString();
+                let page_label = new St.Label({text: texto,style_class:'popup-menu-item',pseudo_class:clase, reactive: true});
+
+                page_label._page_assigned=i;
+                page_label._customEventId=page_label.connect('button-release-event',Lang.bind(this,this._onPageClick));
+                page_label._customEnterId=page_label.connect('enter-event',Lang.bind(this,this._onAppEnter));
+                page_label._customLeaveId=page_label.connect('leave-event',Lang.bind(this,this._onAppLeave));
+                page_label._customDestroyId=page_label.connect('destroy',Lang.bind(this,this._onAppDestroy));
+                page_label._customPseudoClassActive='active';
+                if (i==this.currentPageVisibleInMenu) {
+                    page_label._customPseudoClassInactive='active';
+                } else {
+                    page_label._customPseudoClassInactive='';
+                }
+                pages.add(page_label, {y_align:St.Align.START});
+                this.pagesVisibleInMenu+=1;
+            }
+        } else {
+            this.pagesVisibleInMenu=1;
+            let page_label = new St.Label({text: " ",style_class:'popup-menu-item', reactive: true});
+            pages.add(page_label, {y_align:St.Align.START});
         }
 
         if (this.pagesVisibleInMenu>1) {
@@ -280,49 +446,55 @@ const ApplicationsButton = new Lang.Class({
         }
 
         if(this._activitiesNoVisible) {
-        
             // one empty element to separate ACTIVITIES from the list
-            let item = new St.Label({text: ' ', style_class:'popup-menu-item', reactive: false});
-            this.classContainer.add(item);
+            if (paintCategories) {
+                let item = new St.Label({text: ' ', style_class:'popup-menu-item', reactive: false});
+                this.classContainer.add(item);
+            }
             
-            item = new St.Label({text: _("Activities"), style_class:'popup-menu-item', reactive: true});
-            this.mainContainer.add(item, {row: 2, col: 0, x_fill: false, y_fill: false, y_expand: false, x_align: St.Align.START, y_align: St.Align.END});
+            let item = new St.Label({text: _("Activities"), style_class:'popup-menu-item', reactive: true});
             item._customEventId=item.connect('button-release-event',Lang.bind(this,this._onActivitiesClick));
-            item._customDestroyId=item.connect('destroy',Lang.bind(this,this._onDestroyActor));
+            item._customEnterId=item.connect('enter-event',Lang.bind(this,this._onAppEnter));
+            item._customLeaveId=item.connect('leave-event',Lang.bind(this,this._onAppLeave));
+            item._customDestroyId=item.connect('destroy',Lang.bind(this,this._onAppDestroy));
+            item._customPseudoClassActive='active';
+            item._customPseudoClassInactive='';
+            this.baseContainer.add(item, {row: 0, col: 0, x_fill: false, y_fill: false, x_expand: false, y_expand: false, x_align: St.Align.START, y_align: St.Align.END});
+            this.baseContainer.add(pages, {row: 0, col: 1, x_fill: false, y_fill: false, x_expand: true, y_expand: false, x_align: St.Align.MIDDLE, y_align: St.Align.END});
+        } else {
+            this.baseContainer.add(pages, {row: 0, col: 0, x_fill: false, y_fill: false, y_expand: false, x_align: St.Align.MIDDLE, y_align: St.Align.END});
         }
 
         let ppal = new SlingShotItem(this.mainContainer,'',{reactive:false});
         this.menu.removeAll();
         this.menu.addMenuItem(ppal);
-        
+
         // These lines are to ensure that the menu and the icons keep always the maximum size needed
-        
-        if (this._currentWidth_icons>this.iconsContainer.width) {
-            this.iconsContainer.width=this._currentWidth_icons;
-        } else {
-            this._currentWidth_icons=this.iconsContainer.width;
-        }
-
-        if (this.iconsContainer.height<149*(1+Math.floor(ICONS_PER_PAGE/ICONS_PER_ROW))) {
-            this.iconsContainer.height=149*(1+Math.floor(ICONS_PER_PAGE/ICONS_PER_ROW));
-        }
-
-        if (this._currentHeight_icons>this.iconsContainer.height) {
-            this.iconsContainer.height=this._currentHeight_icons;
-        } else {
-            this._currentHeight_icons=this.iconsContainer.height;
-        }
-        
-        if (this._currentWidth>this.mainContainer.width) {
-            this.mainContainer.width=this._currentWidth;
-        } else {
+        if (this._currentWidth<=this.mainContainer.width) {
             this._currentWidth=this.mainContainer.width;
         }
-        if (this._currentHeight>this.mainContainer.height) {
-            this.mainContainer.height=this._currentHeight;
-        } else {
+
+
+        if (this.iconsContainer.height<130*(1+ICONSPERCOLUMN)) {
+            this.iconsContainer.height=130*(1+ICONSPERCOLUMN);
+        }
+
+
+        this.mainContainer.width=this._currentWidth;
+        if (this._currentHeight<=this.mainContainer.height) {
             this._currentHeight=this.mainContainer.height;
         }
+        this.mainContainer.height=this._currentHeight;
+        if (this._currentIconsWidth<=this.iconsContainer.width) {
+            this._currentIconsWidth=this.iconsContainer.width;
+        }
+        this.iconsContainer.width=this._currentIconsWidth;
+        if (this._currentIconsHeight<=this.iconsContainer.height) {
+            this._currentIconsHeight=this.iconsContainer.height;
+        }
+        this.iconsContainer.height=this._currentIconsHeight;
+
+
 
     },
 
@@ -339,6 +511,45 @@ const ApplicationsButton = new Lang.Class({
         if ((direction == Clutter.ScrollDirection.UP) && (this.currentPageVisibleInMenu>0)) {
             this.currentPageVisibleInMenu-=1;
             this._display();
+        }
+    },
+
+    _changeShape : function() {
+    
+        this._currentWidth=1.0;
+        this._currentHeight=1.0;
+        this._currentIconsWidth=1.0;
+        this._currentIconsHeight=1.0;
+
+
+        if (true==Lib.getSettings(SCHEMA).get_boolean('maximize-menu')) {
+            ICONSPERROW    = (Math.floor( (LayoutManager.monitors[LayoutManager.primaryIndex].width  - 314) / 146  )  ) ;
+            ICONSPERCOLUMN = (Math.floor( (LayoutManager.monitors[LayoutManager.primaryIndex].height - 330) / 125  )  ) ;
+        }
+        else {
+            ICONSPERROW    = ICONSPERROW_DEF ;
+            ICONSPERCOLUMN = ICONSPERCOLUMN_DEF ;
+        }
+
+
+
+        this._iconsPerRow = ICONSPERROW;
+        this._iconsPerColumn = ICONSPERCOLUMN;
+        this.currentPageVisibleInMenu=0;
+        this._display();
+    },
+
+    _onCategoriesClick : function(actor,event) {
+        if (false==this._settings.get_boolean('show-categories')) {
+            this._settings.set_boolean('show-categories',true);
+            this._changeShape();
+        }
+    },
+
+    _onIconsClick : function(actor,event) {
+        if (true==this._settings.get_boolean('show-categories')) {
+            this._settings.set_boolean('show-categories',false);
+            this._changeShape();
         }
     },
 
@@ -369,11 +580,11 @@ const ApplicationsButton = new Lang.Class({
     },
 
     _onAppEnter : function(actor,event) {
-        actor.set_style_pseudo_class(actor._customPseudoClass);
+        actor.set_style_pseudo_class(actor._customPseudoClassActive);
     },
 
     _onAppLeave : function(actor,event) {
-        actor.set_style_pseudo_class('');
+        actor.set_style_pseudo_class(actor._customPseudoClassInactive);
     },
 
     _onAppDestroy : function(actor,event) {
@@ -389,14 +600,49 @@ const ApplicationsButton = new Lang.Class({
     },
     
     _onChangedSetting: function(key) {
+        this._currentWidth=1.0;
+        this._currentHeight=1.0;
+        this._currentIconsWidth=1.0;
+        this._currentIconsHeight=1.0;
+        this.currentPageVisibleInMenu=0;
+
+        if (true==Lib.getSettings(SCHEMA).get_boolean('maximize-menu')) {
+            ICONSPERROW    = (Math.floor( (LayoutManager.monitors[LayoutManager.primaryIndex].width  - 314) / 146  )  ) ;
+            ICONSPERCOLUMN = (Math.floor( (LayoutManager.monitors[LayoutManager.primaryIndex].height - 330) / 125  )  ) ;
+        }
+        else {
+            ICONSPERROW    = ICONSPERROW_DEF ;
+            ICONSPERCOLUMN = ICONSPERCOLUMN_DEF ;
+        }
+
+        this._iconsPerRow = ICONSPERROW;
+        this._iconsPerColumn = ICONSPERCOLUMN;
         this._onSetActivitiesHotspot();
         this._onSetActivitiesStatus();
+        this._onSetButtonStyle();
     },
-    
+
+    _onSetButtonStyle: function() {
+        switch(this._settings.get_enum('menu-button')) {
+        case 0: // text and icon
+            this.buttonIcon.show();
+            this.buttonLabel.show();
+        break;
+        case 1: // only icon
+            this.buttonIcon.show();
+            this.buttonLabel.hide();
+        break;
+        case 2: // only text
+            this.buttonIcon.hide();
+            this.buttonLabel.show();
+        break;
+        }
+    },
+
     _onSetActivitiesStatus: function() {
-        this._setActivitiesNoVisible(settings.get_boolean("show-activities"));
+        this._setActivitiesNoVisible(this._settings.get_boolean('hide-activities'));
     },
-    
+
     _setActivitiesNoVisible: function(mode) {
         this._activitiesNoVisible=mode;
         if (mode) {
@@ -417,11 +663,11 @@ const ApplicationsButton = new Lang.Class({
             }
         }
     },
-    
+
     _onSetActivitiesHotspot: function() {
-        this._setActivitiesNoHotspot(settings.get_boolean("disable-activities-hotspot"));
+        this._setActivitiesNoHotspot(this._settings.get_boolean("disable-activities-hotspot"));
     },
-    
+
     _setActivitiesNoHotspot: function(mode) {
         if (mode) {
             if (ShellVersion[1]>4) {
@@ -446,12 +692,12 @@ let SlingShotButton;
 
 function enable() {
     SlingShotButton = new ApplicationsButton();
-    
+
     if (ShellVersion[1]>4) {
         Main.panel.addToStatusArea('slingshot-menu', SlingShotButton, 0, 'left');
     } else {
         Main.panel._leftBox.insert_child_at_index(SlingShotButton.actor,0);
-        Main.panel._menus.addMenu(SlingShotButton.menu);            
+        Main.panel._menus.addMenu(SlingShotButton.menu);
     }
 }
 
@@ -459,6 +705,10 @@ function disable() {
     SlingShotButton.destroy();
 }
 
-function init() {
-    settings = Lib.getSettings(SCHEMA);
+function init(extensionMeta) {
+
+    let theme = imports.gi.Gtk.IconTheme.get_default();
+    theme.append_search_path(extensionMeta.path + "/icons");
+
 }
+
